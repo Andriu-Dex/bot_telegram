@@ -210,9 +210,10 @@ def test_voice_uses_existing_ingest_and_respects_handover(session_factory, monke
     original = httpx.AsyncClient
     monkeypatch.setattr(worker, 'client', lambda: original(transport=httpx.ASGITransport(app=app), base_url='http://test', headers={'Authorization':'Bearer ' + 'i'*40}))
     monkeypatch.setattr(worker, 'transcribe', AsyncMock(side_effect=['Quiero hablar con un asesor', 'Tengo otra consulta sobre Python']))
+    updates = [voice_update(update_id=1), voice_update(update_id=2)]
     async def scenario():
-        await worker.incoming_voice(voice_update(update_id=1), None)
-        await worker.incoming_voice(voice_update(update_id=2), None)
+        await worker.incoming_voice(updates[0], None)
+        await worker.incoming_voice(updates[1], None)
     asyncio.run(scenario())
     with session_factory() as db:
         lead = db.scalar(select(Lead))
@@ -223,6 +224,38 @@ def test_voice_uses_existing_ingest_and_respects_handover(session_factory, monke
         assert messages[0].text == '🎤 Quiero hablar con un asesor' and messages[0].external_id == '1'
         assert messages[1].role == 'assistant' and messages[1].delivery == 'handoff_pending'
         assert messages[2].text == '🎤 Tengo otra consulta sobre Python' and messages[2].role == 'user'
+    updates[0].effective_message.reply_text.assert_not_awaited()
+    assert 'se transcribió' in updates[1].effective_message.reply_text.await_args.args[0]
+    assert 'IA está pausada' in updates[1].effective_message.reply_text.await_args.args[0]
+
+
+@pytest.mark.parametrize('mode,duplicate,expected', [('human',False,1),('human',True,0),('llm',False,0),('fallback',False,0),('rules',False,0)])
+def test_handoff_receipt_is_local_and_not_a_second_bot_answer(monkeypatch, mode, duplicate, expected):
+    update=voice_update()
+    monkeypatch.setattr(worker,'transcribe',AsyncMock(return_value='Pregunta sobre el curso'))
+    monkeypatch.setattr(worker,'forward_text',AsyncMock(return_value={'mode':mode,'duplicate':duplicate}))
+    asyncio.run(worker.incoming_voice(update,None))
+    assert update.effective_message.reply_text.await_count==expected
+
+
+def test_text_in_handoff_also_receives_receipt(monkeypatch):
+    update=voice_update();update.effective_message.text='Hola'
+    monkeypatch.setattr(worker,'forward_text',AsyncMock(return_value={'mode':'human','duplicate':False}))
+    asyncio.run(worker.incoming(update,None))
+    assert 'Recibí tu mensaje' in update.effective_message.reply_text.await_args.args[0]
+
+
+def test_unexpected_private_update_error_notifies_user():
+    update=voice_update()
+    asyncio.run(worker.on_error(update,SimpleNamespace(error=RuntimeError('private details'))))
+    assert 'Ocurrió un problema' in update.effective_message.reply_text.await_args.args[0]
+    assert 'private details' not in update.effective_message.reply_text.await_args.args[0]
+
+
+def test_group_errors_do_not_send_private_support_notice():
+    update=voice_update(chat_type='group')
+    asyncio.run(worker.on_error(update,SimpleNamespace(error=RuntimeError())))
+    update.effective_message.reply_text.assert_not_awaited()
 
 
 @pytest.mark.parametrize('text,expected', [('Hola', 'Hola'), ('/start', 'Ver cursos'), ('/asesor', 'Quiero hablar con un asesor')])

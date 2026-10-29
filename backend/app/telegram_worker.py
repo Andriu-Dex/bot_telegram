@@ -18,6 +18,12 @@ async def forward_text(update: Update, text: str):
     async with client() as api:
         response = await api.post('/api/channels/telegram/messages', json={'external_id': str(update.effective_chat.id), 'message_id': str(update.update_id), 'name': update.effective_user.full_name, 'text': text[:4000]})
         response.raise_for_status()
+        return response.json()
+
+async def acknowledge_handoff(message, result, *, voice=False):
+    if isinstance(result, dict) and result.get('mode') == 'human' and not result.get('duplicate'):
+        text = 'Tu nota de voz se transcribió y quedó en el hilo del asesor.' if voice else 'Recibí tu mensaje y quedó en el hilo del asesor.'
+        await message.reply_text(text + ' Esta conversación está en atención humana; la IA está pausada. Un asesor continuará por aquí.')
 
 async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -30,7 +36,8 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = 'Ver cursos'
     elif text == '/asesor':
         text = 'Quiero hablar con un asesor'
-    await forward_text(update, text)
+    result = await forward_text(update, text)
+    await acknowledge_handoff(message, result)
 
 async def incoming_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -63,7 +70,8 @@ async def incoming_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text('No pude entender el audio. Escribime o pedí un asesor.')
         return
     try:
-        await forward_text(update, ('🎤 ' + transcript.strip())[:4000])
+        result = await forward_text(update, ('🎤 ' + transcript.strip())[:4000])
+        await acknowledge_handoff(message, result, voice=True)
     except httpx.HTTPError:
         log.warning('Voice transcribed but backend unavailable')
         await message.reply_text('Entendí tu audio, pero no pude registrar la consulta. Intentá de nuevo en un momento.')
@@ -99,7 +107,15 @@ async def post_shutdown(app):
         task.cancel()
 
 async def on_error(update, context):
-    log.warning('Update failed; check backend availability')
+    # Do not log exception strings: Telegram transport URLs can contain the bot token.
+    log.warning('Update failed (type=%s)', type(context.error).__name__)
+    message = getattr(update, 'effective_message', None)
+    chat = getattr(update, 'effective_chat', None)
+    if message and chat and chat.type == 'private':
+        try:
+            await message.reply_text('Ocurrió un problema al procesar tu mensaje. Inténtalo de nuevo o escribe tu consulta para que podamos atenderte.')
+        except TelegramError:
+            log.warning('Could not deliver processing error notice')
 
 def main():
     cfg = settings()
