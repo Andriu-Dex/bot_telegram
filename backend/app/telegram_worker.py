@@ -63,7 +63,7 @@ def main():
     cfg = settings()
     if not cfg.telegram_bot_token:
         raise SystemExit('Configura TELEGRAM_BOT_TOKEN en .env')
-    app = Application.builder().token(cfg.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build()
+    app = Application.builder().token(cfg.telegram_bot_token).concurrent_updates(16).post_init(post_init).post_shutdown(post_shutdown).build()
     app.add_handler(CommandHandler(['start', 'asesor'], incoming))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, incoming))
     app.add_error_handler(on_error)

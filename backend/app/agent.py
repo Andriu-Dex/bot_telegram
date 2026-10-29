@@ -9,6 +9,8 @@ import httpx
 from sqlalchemy import select
 from .config import settings
 from .models import Course, Lead, Message
+from .network import tls_context
+from .llm import Conversation, ProviderError, output_text
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +27,24 @@ def apply_interest(lead, course):
     lead.course_id = course.id
     if lead.stage == 'nuevo':
         lead.stage = 'interesado'
+
+def concise_details(content):
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    result = []
+    labels = ('Fecha del curso:', 'Fechas de inscripciones:', 'Horario:', 'Modalidad:', 'Conocimientos previos:')
+    for index, line in enumerate(lines):
+        if line in labels and index+1 < len(lines):
+            result.append(line+' '+lines[index+1])
+        if line == 'Precio para los asistentes:':
+            prices = []
+            for price in lines[index+1:index+6]:
+                if '$' in price:
+                    prices.append(price)
+                else:
+                    break
+            if prices:
+                result.append('Precios publicados:\n'+'\n'.join(prices))
+    return '\n\n'.join(result) or content[:900]
 
 def fallback(db, lead, text):
     courses = published(db)
@@ -49,7 +69,11 @@ def fallback(db, lead, text):
             return f'{c.title} figura como {c.status.lower()} en el catálogo. No puedo confirmar una nueva edición. ¿Quieres hablar con un asesor?\nFuente: {c.source_url}'
         if lead.stage == 'solicita_inscripcion':
             return f'Para {c.title}, revisa los requisitos y fechas en la ficha oficial:\n{c.source_url}\n' + (f'Formulario oficial: {c.registration_url}\n' if c.registration_url else 'Un asesor debe confirmar el enlace de inscripción.\n') + 'Compartir el enlace no confirma tu matrícula ni disponibilidad de cupos.'
-        return f'{c.title} · {c.hours}\n\n{c.content[:11000]}\n\nFuente: {c.source_url}\n\n¿Qué experiencia tienes y qué te gustaría conseguir con este curso?'
+        details = concise_details(c.content)
+        if any(w in t for w in ('temario', 'pensum', 'contenido', 'objetivo')):
+            if 'OBJETIVOS' in c.content:
+                details = c.content.split('OBJETIVOS',1)[1].split('LUGAR DE CELEBRACIÓN',1)[0].strip()[:1300]+'\n\n'+details
+        return f'{c.title} · {c.hours}\n\n{details}\n\nFuente: {c.source_url}\n\nLas fechas corresponden a esta edición; la coordinación confirma cupos. ¿Quieres revisar los requisitos o hablar con un asesor?'
     return '¡Hola! Soy el asistente de CTT-FISEI. Estas son las ofertas marcadas como abiertas en el catálogo revisado:\n\n' + '\n'.join(f'• {c.title} — {c.hours}' for c in available) + '\n\n¿Cuál te interesa o qué te gustaría aprender? Las fechas y cupos se confirman en cada ficha. Guardamos esta conversación para atender tu consulta; pide un asesor cuando lo necesites.'
 
 TOOLS = [
@@ -75,7 +99,7 @@ async def respond(db, lead: Lead, text: str):
         lead.priority = max(lead.priority, 80)
         lead.next_action = 'Verificar inscripción con el interesado'
     cfg = settings()
-    if lead.handoff or not cfg.openai_api_key or not cfg.openai_model:
+    if lead.handoff or not cfg.llm_configured:
         return fallback(db, lead, text), 'catalog'
     history = list(reversed(db.scalars(select(Message).where(Message.lead_id == lead.id, Message.role.in_(['user', 'assistant'])).order_by(Message.id.desc()).limit(12)).all()))
     inputs = [{'role': m.role, 'content': m.text[:2500]} for m in history]
@@ -96,28 +120,29 @@ El sistema ya registra intención explícita de inscripción, pero solo un aseso
 Perfil actual: {json.dumps(lead.profile, ensure_ascii=False)}. Curso seleccionado: {lead.course_id}. Etapa: {lead.stage}.
 Al saludar informa brevemente que la conversación se guarda para seguimiento de la consulta.'''
     try:
-        async with httpx.AsyncClient(timeout=40) as client:
+        async with Conversation(cfg, instructions, inputs, TOOLS) as conversation:
             for _ in range(4):
-                result = await client.post(cfg.openai_base_url.rstrip('/') + '/responses', headers={'Authorization': f'Bearer {cfg.openai_api_key}'}, json={'model': cfg.openai_model, 'instructions': instructions, 'input': inputs, 'tools': TOOLS, 'max_output_tokens': 1800, 'store': False})
-                result.raise_for_status()
-                output = result.json()['output']
-                inputs.extend(output)
+                output = await conversation.generate()
                 calls = [o for o in output if o['type'] == 'function_call']
                 if not calls:
-                    answer = '\n'.join(part['text'] for o in output if o['type'] == 'message' for part in o.get('content', []) if part['type'] == 'output_text')
+                    answer = output_text(output)
                     if answer.strip():
                         return answer, 'llm'
                     break
                 for call in calls:
                     args = json.loads(call['arguments'])
+                    if not isinstance(args, dict):
+                        args = {}
                     value = {'error': 'Herramienta inválida'}
                     if call['name'] == 'consultar_cursos':
                         value = [{k: getattr(c, k) for k in ('id', 'title', 'status', 'hours', 'source_url')} for c in published(db)]
                     elif call['name'] == 'detalle_curso':
-                        c = db.get(Course, args.get('course_id'))
+                        course_id = args.get('course_id')
+                        c = db.get(Course, course_id) if isinstance(course_id, int) and course_id > 0 else None
                         value = course_data(c) if c and c.approved else {'error': 'Curso no publicado'}
                     elif call['name'] == 'registrar_interes':
-                        c = db.get(Course, args.get('course_id'))
+                        course_id = args.get('course_id')
+                        c = db.get(Course, course_id) if isinstance(course_id, int) and course_id > 0 else None
                         if c and c.approved:
                             apply_interest(lead, c)
                             value = {'saved': True, 'course': course_data(c)}
@@ -126,7 +151,7 @@ Al saludar informa brevemente que la conversación se guarda para seguimiento de
                         profile.update({k: v[:500] for k, v in args.items() if k in ('objetivo', 'experiencia', 'disponibilidad') and isinstance(v, str) and v.strip()})
                         lead.profile = profile
                         value = {'saved': True}
-                    inputs.append({'type': 'function_call_output', 'call_id': call['call_id'], 'output': json.dumps(value, ensure_ascii=False)})
-    except (httpx.HTTPError, KeyError, ValueError, TypeError):
+                    conversation.tool_result(call, value)
+    except (httpx.HTTPError, ProviderError, KeyError, ValueError, TypeError):
         log.warning('LLM unavailable; using verified catalog fallback')
     return fallback(db, lead, text), 'fallback'

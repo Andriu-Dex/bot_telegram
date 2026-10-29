@@ -9,22 +9,26 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
-from .agent import respond
+from .agent import respond, fallback
 from .auth import admin, internal, issue_token
-from .catalog import fetch_catalog, store_catalog
+from .catalog import fetch_catalog, store_catalog, seed_snapshot
 from .channels import channel_for
 from .config import settings
-from .db import get_db
+from .db import get_db, SessionLocal
 from .models import Audit, Course, Lead, Message, now
 from .triage import classify
+from .policy import policy_response
 
 @asynccontextmanager
 async def lifespan(app):
     cfg = settings()
     if not cfg.admin_password or len(cfg.session_secret) < 32 or len(cfg.internal_api_token) < 32:
         raise RuntimeError('Configura ADMIN_PASSWORD, SESSION_SECRET e INTERNAL_API_TOKEN con scripts/setup.ps1')
+    with SessionLocal() as db:
+        seed_snapshot(db)
+        db.commit()
     yield
 
 app = FastAPI(title='CTT Connect', version='1.0.0', lifespan=lifespan)
@@ -60,6 +64,9 @@ async def events(request: Request):
 def audit(db, actor, action, detail):
     db.add(Audit(actor=actor, action=action, detail=str(detail)))
 
+def cancel_pending(db, lead_id):
+    db.execute(update(Message).where(Message.lead_id == lead_id, Message.role == 'assistant', Message.delivery.in_(['pending', 'handoff_pending'])).values(delivery='cancelled'))
+
 def get_lead(db, lead_id):
     item = db.get(Lead, lead_id)
     if not item:
@@ -91,7 +98,7 @@ def health():
 @app.get('/api/status', dependencies=[Depends(admin)])
 def status():
     cfg = settings()
-    return {'telegram_configured': bool(cfg.telegram_bot_token), 'llm_configured': bool(cfg.openai_api_key and cfg.openai_model), 'whatsapp': 'adapter_pending'}
+    return {'telegram_configured': bool(cfg.telegram_bot_token), 'llm_configured': cfg.llm_configured, 'llm_provider': cfg.ai_provider_id, 'whatsapp': 'adapter_pending'}
 
 @app.get('/api/courses', dependencies=[Depends(admin)])
 def courses(db: Session = Depends(get_db)):
@@ -153,8 +160,11 @@ async def update_lead(lead_id: int, body: LeadPatch, actor=Depends(admin), db: S
     async with locks[f'lead:{lead_id}']:
         db.expire_all()
         lead = get_lead(db, lead_id)
+        previous_handoff = lead.handoff
         for key, value in body.model_dump().items():
             setattr(lead, key, value)
+        if body.handoff or previous_handoff != body.handoff:
+            cancel_pending(db, lead_id)
         lead.updated_at = now()
         audit(db, actor, 'lead.update', f'{lead_id}: {body.stage}')
         db.commit()
@@ -184,15 +194,31 @@ async def ingest(channel, body, db):
             db.flush()
             lead.updated_at = now()
             db.commit()
+            global revision
+            revision += 1
             if lead.handoff or lead.id in paused:
                 return {'lead_id': lead.id, 'reply': None, 'message_id': None, 'mode': 'human', 'duplicate': False}
             async def pipeline():
+                policy = policy_response(body.text)
+                if policy:
+                    return policy, 'policy'
+                from .agent import normalized
+                import re
+                t = normalized(body.text)
+                if re.search(r'\b(quiero|necesito|deseo|hablar|contactar|solicito)\b.*\b(asesor|persona|humano)\b', t) and not re.search(r'\b(no|sin)\b', t):
+                    return await respond(db, lead, body.text)
                 await classify(db, lead, body.text)
+                db.commit()
+                global revision
+                revision += 1
                 return await respond(db, lead, body.text)
             task = asyncio.create_task(pipeline())
             inference_tasks[lead.id] = task
             try:
-                answer, mode = await task
+                answer, mode = await asyncio.wait_for(task, timeout=55)
+            except TimeoutError:
+                db.rollback()
+                answer, mode = fallback(db, lead, body.text), 'fallback'
             except asyncio.CancelledError:
                 db.rollback()
                 return {'lead_id': lead.id, 'reply': None, 'message_id': None, 'mode': 'human', 'duplicate': False}
@@ -201,7 +227,9 @@ async def ingest(channel, body, db):
             if lead.id in paused:
                 db.rollback()
                 return {'lead_id': lead.id, 'reply': None, 'message_id': None, 'mode': 'human', 'duplicate': False}
-            msg = Message(lead_id=lead.id, external_id='reply:' + body.message_id, role='assistant', text=answer, delivery='pending' if channel != 'simulator' else 'delivered')
+            if lead.handoff:
+                cancel_pending(db, lead.id)
+            msg = Message(lead_id=lead.id, external_id='reply:' + body.message_id, role='assistant', text=answer, delivery=('handoff_pending' if lead.handoff else 'pending') if channel != 'simulator' else 'delivered')
             db.add(msg)
             db.commit()
             return {'lead_id': lead.id, 'reply': answer, 'message_id': msg.id, 'mode': mode, 'duplicate': False}
@@ -230,6 +258,7 @@ async def reply(lead_id: int, body: Reply, actor=Depends(admin), db: Session = D
         lead = get_lead(db, lead_id)
         lead.handoff = True
         lead.owner = lead.owner or actor
+        cancel_pending(db, lead_id)
         msg = Message(lead_id=lead_id, role='advisor', text=body.text, delivery='pending')
         db.add(msg)
         lead.updated_at = now()
@@ -245,7 +274,7 @@ async def reply(lead_id: int, body: Reply, actor=Depends(admin), db: Session = D
 
 @app.get('/api/channels/telegram/outbox', dependencies=[Depends(internal)])
 def outbox(db: Session = Depends(get_db)):
-    rows = db.execute(select(Message, Lead).join(Lead, Message.lead_id == Lead.id).where(Lead.channel == 'telegram', Message.role == 'assistant', Message.delivery == 'pending').order_by(Message.id).limit(20)).all()
+    rows = db.execute(select(Message, Lead).join(Lead, Message.lead_id == Lead.id).where(Lead.channel == 'telegram', Message.role == 'assistant', Message.delivery.in_(['pending', 'handoff_pending'])).order_by(Message.id).limit(20)).all()
     return [{'id': m.id, 'external_id': l.external_id, 'text': m.text} for m, l in rows]
 
 @app.post('/api/channels/telegram/outbox/{message_id}/dispatch', dependencies=[Depends(internal)])
@@ -258,10 +287,10 @@ async def dispatch(message_id: int, db: Session = Depends(get_db)):
         lead = get_lead(db, msg.lead_id)
         if lead.channel != 'telegram':
             raise HTTPException(404, 'Canal incorrecto')
-        if msg.delivery != 'pending':
+        if msg.delivery not in ('pending', 'handoff_pending'):
             return {'delivery': msg.delivery}
         # The one handoff acknowledgement is allowed. Any earlier queued answer is suppressed.
-        if lead.id in paused or (lead.handoff and lead.sentiment != 'frustrado' and 'He registrado tu solicitud' not in msg.text):
+        if lead.id in paused or (lead.handoff and msg.delivery != 'handoff_pending'):
             msg.delivery = 'cancelled'
         else:
             try:

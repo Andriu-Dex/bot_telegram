@@ -1,11 +1,15 @@
 """Bounded importer: only public course pages on the configured university host."""
 import asyncio
 import re
+import json
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup, Comment
 from sqlalchemy import select
 from .models import Course, now
+from .network import tls_context
 
 BASE = 'https://ctt-talleresfisei.uta.edu.ec/'
 
@@ -50,7 +54,7 @@ def parse_detail(html):
     return dict(title=title.get_text(' ', strip=True), content=text[:24000], registration_url=registration)
 
 async def fetch_catalog():
-    async with httpx.AsyncClient(timeout=25, follow_redirects=False, headers={'User-Agent': 'CTT-Admissions/1.0 (catalog import)'}) as client:
+    async with httpx.AsyncClient(timeout=25, verify=tls_context(), follow_redirects=False, headers={'User-Agent': 'CTT-Admissions/1.0 (catalog import)'}) as client:
         response = await client.get(BASE + 'course.php')
         response.raise_for_status()
         items = parse_listing(response.text)
@@ -83,3 +87,19 @@ def store_catalog(db, items):
                 changed += 1
     db.flush()
     return changed
+
+def seed_snapshot(db):
+    """Offline first boot only; all imported records still require publication."""
+    if db.scalar(select(Course.id).limit(1)):
+        return 0
+    snapshot = json.loads((Path(__file__).resolve().parents[1] / 'data/catalog.snapshot.json').read_text(encoding='utf-8'))
+    allowed = ('source_url', 'title', 'status', 'hours', 'content', 'registration_url')
+    items = []
+    for item in snapshot['items']:
+        if not re.fullmatch(re.escape(BASE) + r'curso\d+\.php', item['source_url']):
+            raise ValueError('Fuente inválida en snapshot')
+        items.append({key:item[key] for key in allowed})
+    count = store_catalog(db, items)
+    for course in db.scalars(select(Course)):
+        course.synced_at = datetime.fromisoformat(snapshot['retrieved_at'])
+    return count

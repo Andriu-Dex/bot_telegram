@@ -2,6 +2,7 @@
 from typing import Protocol
 import httpx
 from .config import settings
+from .network import tls_context
 
 class Channel(Protocol):
     async def send(self, external_id: str, text: str) -> None: ...
@@ -11,7 +12,7 @@ class TelegramChannel:
         token = settings().telegram_bot_token
         if not token:
             raise RuntimeError('Telegram no está configurado')
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=20, verify=tls_context()) as client:
             for start in range(0, len(text), 4000):
                 response = await client.post(f'https://api.telegram.org/bot{token}/sendMessage', json={'chat_id': external_id, 'text': text[start:start+4000]})
                 response.raise_for_status()
