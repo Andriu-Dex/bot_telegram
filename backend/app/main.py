@@ -100,7 +100,7 @@ def health():
 @app.get('/api/status', dependencies=[Depends(admin)])
 def status():
     cfg = settings()
-    return {'telegram_configured': bool(cfg.telegram_bot_token), 'llm_configured': cfg.llm_configured, 'llm_provider': cfg.ai_provider_id, 'llm_runtime': runtime_status(), 'whatsapp': 'adapter_pending'}
+    return {'telegram_configured': bool(cfg.telegram_bot_token), 'llm_configured': cfg.llm_configured, 'llm_provider': cfg.ai_provider_id, 'llm_model': cfg.llm_model, 'llm_runtime': runtime_status(), 'whatsapp': 'adapter_pending'}
 
 @app.get('/api/courses', dependencies=[Depends(admin)])
 def courses(db: Session = Depends(get_db)):
