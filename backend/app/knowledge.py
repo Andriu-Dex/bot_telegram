@@ -1,13 +1,49 @@
 """Grounded facts, question scope and course references, independent of the LLM."""
 import re
 import unicodedata
-from difflib import get_close_matches
 from sqlalchemy import select
 from .models import Message
 
 
 def normalize(text):
     return ''.join(c for c in unicodedata.normalize('NFD', text.lower()) if unicodedata.category(c) != 'Mn')
+
+
+QUESTION_WORDS = set('curso cursos descripcion trata consiste aprender precio precios costo cuesta cuanto cuando fecha fechas empieza comienza horario duracion requisitos temario modalidad presencial virtual certificado inscripciones inscripcion'.split())
+
+
+def typo_distance(left, right):
+    """Edit distance including a swapped pair of adjacent letters."""
+    rows = [list(range(len(right) + 1))]
+    for i, a in enumerate(left, 1):
+        row = [i]
+        for j, b in enumerate(right, 1):
+            value = min(rows[-1][j] + 1, row[-1] + 1, rows[-1][j-1] + (a != b))
+            if i > 1 and j > 1 and a == right[j-2] and left[i-2] == b:
+                value = min(value, rows[i-2][j-2] + 1)
+            row.append(value)
+        rows.append(row)
+    return rows[-1][-1]
+
+
+def interpret_text(text, vocabulary=()):
+    """Correct only unambiguous domain terms; keep stored/user text untouched."""
+    vocabulary = QUESTION_WORDS | set(vocabulary)
+    def correct(match):
+        word = match.group()
+        if word in vocabulary or word in STOP or len(word) < 4:
+            return word
+        if word in ALIASES:
+            return ALIASES[word]
+        candidates = [(typo_distance(word, candidate), candidate) for candidate in vocabulary
+                      if len(candidate) >= 4 and abs(len(word)-len(candidate)) <= 2]
+        if not candidates:
+            return word
+        best = min(distance for distance, _ in candidates)
+        closest = [candidate for distance, candidate in candidates if distance == best]
+        limit = 2 if len(word) >= 8 else 1
+        return closest[0] if best <= limit and len(closest) == 1 else word
+    return re.sub(r'[a-z0-9]+', correct, normalize(text))
 
 
 HEADINGS = {
@@ -55,7 +91,7 @@ def course_facts(course):
 
 
 def requested_fields(text):
-    t = normalize(text)
+    t = interpret_text(text)
     fields = []
     patterns = [
         ('description', r'de que (?:se )?trata|descripcion|en que consiste|que es|que (?:voy a )?aprend|hablame|resumen'),
@@ -107,7 +143,8 @@ def tokens(text):
 
 def resolve_courses(db, lead, courses, text):
     """Return candidates plus whether a new course name was explicitly requested."""
-    t = normalize(text)
+    vocab = set().union(*(tokens(c.title) for c in courses)) if courses else set()
+    t = interpret_text(text, vocab)
     if lead.course_id and re.search(r'\b(?:curso anterior|el anterior)\b', t):
         history = db.scalars(select(Message).where(Message.lead_id == lead.id, Message.role == 'user').order_by(Message.id.desc()).limit(12)).all()
         for message in history:
@@ -120,15 +157,9 @@ def resolve_courses(db, lead, courses, text):
             if len(matches) == 1 and matches[0].id != lead.course_id:
                 return matches, True
         return [], False
-    query = tokens(text)
-    vocab = set().union(*(tokens(c.title) for c in courses)) if courses else set()
-    # Fuzzy correction is confined to course vocabulary, never arbitrary substring matching.
+    query = tokens(t)
+    # Corrections are limited to unique close terms from the approved catalogue.
     corrected = set(query)
-    for word in query - vocab:
-        if len(word) >= 5:
-            match = get_close_matches(word, [v for v in vocab if len(v) >= 5], n=1, cutoff=0.86)
-            if match:
-                corrected.add(match[0])
     scored = []
     for course in courses:
         words = tokens(course.title)
@@ -150,11 +181,11 @@ def resolve_courses(db, lead, courses, text):
                 return selected, True
         return matches, True
     explicit = re.search(r'\bcurso\s+(?:(?:de|sobre|llamado)\s+)?([a-z][a-z0-9]+)', t)
-    if explicit and explicit.group(1) not in STOP and explicit.group(1) not in ('anterior', 'ese', 'este'):
+    if explicit and explicit.group(1) not in STOP | QUESTION_WORDS and explicit.group(1) not in ('anterior', 'ese', 'este'):
         return [], True
     named = re.findall(r'\b[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+\b', text)
     ignored_names = STOP | {'uta', 'ctt', 'fisei', 'soy', 'estudiante', 'estudiantes', 'publico', 'general', 'puedo', 'puedes', 'necesito', 'gracias', 'hola'}
-    if any(normalize(name) not in ignored_names and normalize(name) not in vocab for name in named[1:]):
+    if any(interpret_text(name, vocab) not in ignored_names | QUESTION_WORDS | vocab for name in named[1:]):
         return [], True
     # The selected course survives follow-up questions, not a fresh unknown subject.
     if lead.course_id:

@@ -53,6 +53,10 @@ El setup conserva el `.env` existente. El modo local usa la base definida por `D
 
 También puedes usar **Simulador** para probar el pipeline sin Telegram. Crea prospectos identificados como `simulator`; no envía mensajes a cuentas externas. Las pruebas de audio se hacen en Telegram.
 
+## Preguntas con errores de escritura
+
+Prueba «De que trta el cruso de Githbu?», seguido de «Y el presio de ese curso?» y «Cual es el horairo?». Debe responder descripción, precio y horario por separado. «De que trata Pyhton?» debe pedir el nivel si hay varias opciones; «Pyhton 2» debe conservar el nivel. Los mensajes originales se conservan en el historial. La corrección se limita a términos de consulta y nombres del catálogo aprobado; no implica reconocer cualquier error posible.
+
 ## Recorrido de voz
 
 La voz usa **Groq**, mientras Gemini atiende la conversación. Verifica en `.env`: `AI_GROQ_BASE_URL=https://api.groq.com/openai/v1`, `AI_GROQ_API_KEY` de Groq y `AI_GROQ_MODEL=whisper-large-v3-turbo`. No uses `openai/gpt-oss-120b`: ese modelo es para conversación. Recrea el worker con `docker compose --profile telegram up --build -d telegram`.

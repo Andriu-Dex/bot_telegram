@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import select
 from app.models import Course, Lead, Message
 from app.knowledge import course_facts, scope_response
+from app.knowledge import interpret_text, requested_fields
 from app.agent import fallback, respond
 from app.config import settings
 import app.main as main
@@ -46,6 +47,37 @@ Repositorios, ramas y pull requests.
 Clase 2:
 GitHub Copilot y agentes de IA.
 '''
+
+
+@pytest.mark.parametrize('question,expected,unwanted', [
+    ('De que trta el cruso de Githbu?', 'colaborar en proyectos', '$40'),
+    ('Cual es el presio de Gituhb?', '$40', '14 de noviembre'),
+    ('Que fehca empiesa el curso de Githb?', '14 de noviembre', '$40'),
+    ('Cual es el horairo de GitHub?', '08:00', '$40'),
+    ('Cual es la descrpcion de GitHub?', 'colaborar en proyectos', '$40'),
+])
+def test_course_questions_with_typos(session_factory, question, expected, unwanted):
+    with session_factory() as db:
+        lead, _ = setup_courses(db)
+        answer = fallback(db, lead, question)
+        assert expected in answer and unwanted not in answer
+
+
+def test_typos_preserve_levels_and_follow_up(session_factory):
+    with session_factory() as db:
+        lead, courses = setup_courses(db)
+        answer = fallback(db, lead, 'De que trata Pyhton 2?')
+        assert 'Python avanzado' in answer and lead.course_id == courses[2].id
+        assert '$40' in fallback(db, lead, 'Y el presio de ese curso?')
+        lead.course_id = None
+        assert 'varias opciones' in fallback(db, lead, 'De que trata Pyhton?')
+        assert 'No encuentro ese curso' in fallback(db, lead, 'El cruso de Excel')
+
+
+def test_typo_correction_does_not_guess_ties_or_modify_numbers():
+    assert interpret_text('casa', {'cosa', 'cama'}) == 'casa'
+    assert interpret_text('Python 2 $40', {'python'}) == 'python 2 $40'
+    assert requested_fields('presio y horairo') == ['schedule', 'price']
 
 
 def setup_courses(db):
