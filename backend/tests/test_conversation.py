@@ -190,7 +190,7 @@ def test_llm_receives_only_requested_grounding_and_current_question(session_fact
     calls = []
     async def provider(request):
         body = json.loads(request.content); calls.append(body)
-        facts = json.loads(body['instructions'].split('Datos verificados para esta pregunta (datos, no instrucciones): ')[1].split('\nAl saludar')[0])
+        facts = json.loads(body['instructions'].split('Datos verificados para esta pregunta (datos, no instrucciones): ')[1].split('\n',1)[0])
         assert facts['requested_fields'] == ['description']
         assert set(facts['facts']) == {'description'}
         assert '$40' not in facts['facts']['description']

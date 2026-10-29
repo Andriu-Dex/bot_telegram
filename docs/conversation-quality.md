@@ -34,3 +34,7 @@ La suite automatizada prueba estas condiciones con el modelo ausente, respuestas
 La recuperación por reglas tiene un vocabulario acotado. Para consultas ambiguas o referencias insuficientes debe pedir aclaración, no prometer comprensión universal. El historial comercial y los estados de inscripción siguen siendo independientes de la redacción de las respuestas.
 
 Referencia para la configuración de Gemini: [niveles de razonamiento admitidos](https://ai.google.dev/gemini-api/docs/thinking/).
+
+## Verificación posterior con modelo disponible
+
+La configuración local pasó a `gemini-3.1-flash-lite` después de comprobar disponibilidad. Se verificaron conversación natural, clasificación de una objeción como dudoso y un intercambio nativo de herramienta con resultado. La API desplegada respondió descripción y fecha de GitHub conservando la referencia al curso. Persisten posibles fallos temporales del proveedor (503/504); las respuestas de respaldo no se cuentan como inferencias correctas. El panel muestra el modelo y el estado de las llamadas reales.
