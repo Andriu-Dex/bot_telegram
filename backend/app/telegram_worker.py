@@ -1,15 +1,23 @@
 """Run separately from API: python -m app.telegram_worker. One polling worker only."""
 import logging
+from io import BytesIO
 import httpx
 from telegram import ReplyKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from .config import settings
+from .stt import TranscriptionError, transcribe
 
 log = logging.getLogger(__name__)
 
 def client():
     cfg = settings()
     return httpx.AsyncClient(base_url=cfg.backend_url, headers={'Authorization': f'Bearer {cfg.internal_api_token}'}, timeout=180)
+
+async def forward_text(update: Update, text: str):
+    async with client() as api:
+        response = await api.post('/api/channels/telegram/messages', json={'external_id': str(update.effective_chat.id), 'message_id': str(update.update_id), 'name': update.effective_user.full_name, 'text': text[:4000]})
+        response.raise_for_status()
 
 async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -22,9 +30,43 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = 'Ver cursos'
     elif text == '/asesor':
         text = 'Quiero hablar con un asesor'
-    async with client() as api:
-        response = await api.post('/api/channels/telegram/messages', json={'external_id': str(update.effective_chat.id), 'message_id': str(update.update_id), 'name': user.full_name, 'text': text[:4000]})
-        response.raise_for_status()
+    await forward_text(update, text)
+
+async def incoming_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not message or not user or not chat or chat.type != 'private' or not message.voice:
+        return
+    voice = message.voice
+    duration = voice.duration.total_seconds() if hasattr(voice.duration, 'total_seconds') else voice.duration
+    if duration > 60:
+        await message.reply_text('Máximo un minuto; escribí el mensaje o acortalo.')
+        return
+    too_large = 'El audio supera los 2 MB. Escribí el mensaje o acortalo.'
+    if voice.file_size and voice.file_size > 2_000_000:
+        await message.reply_text(too_large)
+        return
+    try:
+        telegram_file = await voice.get_file()
+        with BytesIO() as buffer:
+            await telegram_file.download_to_memory(out=buffer)
+            audio = buffer.getvalue()
+        if len(audio) > 2_000_000:
+            await message.reply_text(too_large)
+            return
+        transcript = await transcribe(audio)
+        if not isinstance(transcript, str) or not transcript.strip():
+            raise TranscriptionError('Transcripción vacía.')
+    except (TelegramError, TranscriptionError):
+        log.warning('Voice transcription unavailable; user asked to send text')
+        await message.reply_text('No pude entender el audio. Escribime o pedí un asesor.')
+        return
+    try:
+        await forward_text(update, ('🎤 ' + transcript.strip())[:4000])
+    except httpx.HTTPError:
+        log.warning('Voice transcribed but backend unavailable')
+        await message.reply_text('Entendí tu audio, pero no pude registrar la consulta. Intentá de nuevo en un momento.')
 
 async def deliver(context: ContextTypes.DEFAULT_TYPE):
     # A persisted outbox survives worker restarts. Telegram has no idempotency key:
@@ -66,6 +108,7 @@ def main():
     app = Application.builder().token(cfg.telegram_bot_token).concurrent_updates(16).post_init(post_init).post_shutdown(post_shutdown).build()
     app.add_handler(CommandHandler(['start', 'asesor'], incoming))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, incoming))
+    app.add_handler(MessageHandler(filters.VOICE, incoming_voice))
     app.add_error_handler(on_error)
     app.run_polling(drop_pending_updates=False)
 

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ''
     openai_model: str = ''
     openai_base_url: str = 'https://api.openai.com/v1'
+    stt_model: str = 'grok-voice-transcribe-2.0'
     backend_url: str = 'http://127.0.0.1:8000'
     ai_provider_id: str = 'gemini'
     ai_provider_api_key: str = Field(default='', validation_alias=AliasChoices('AI_PROVIDER_API_KEY', 'GEMINI_API_KEY'))
