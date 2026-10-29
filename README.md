@@ -39,6 +39,9 @@ Edita `.env` localmente; no compartas sus valores en el repositorio ni en captur
 | `AI_PROVIDER_MODEL` | Modelo habilitado con herramientas y salida estructurada; también acepta `GEMINI_MODEL` |
 | `AI_PROVIDER_BASE_URL` | Gemini: `https://generativelanguage.googleapis.com/v1beta`. Se acepta la terminación `/openai` y se normaliza a la API nativa |
 | `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | Compatibilidad opcional cuando `AI_PROVIDER_ID=openai` |
+| `AI_GROQ_API_KEY` | Clave de Groq para notas de voz; también acepta `GROQ_API_KEY` |
+| `AI_GROQ_BASE_URL` | `https://api.groq.com/openai/v1` por defecto |
+| `AI_GROQ_MODEL` | `whisper-large-v3-turbo` por defecto; también admite `whisper-large-v3` |
 | `DATABASE_URL` | SQLite local o URL SQLAlchemy de PostgreSQL (`postgresql+psycopg://...`) |
 | `BACKEND_URL` | Dirección que usa el worker para comunicarse con la API |
 | `POSTGRES_PASSWORD` | Contraseña de PostgreSQL para Docker, creada por setup |
@@ -132,24 +135,24 @@ npx playwright test
 
 Las notas privadas de Telegram, en OGG/Opus, se transcriben antes de llegar al backend. El asesor ve el texto con prefijo `🎤 `. No se guarda el audio en disco ni en la base de datos. El proveedor STT recibe el audio y se aplican sus condiciones de tratamiento de datos. No se admiten archivos de audio genéricos, grupos ni videonotas.
 
-El servicio definido en `instruction.md` es **xAI STT**, distinto de Gemini. Para habilitarlo, usa estas variables existentes de `.env`:
+La transcripción usa **Groq con Whisper**, independiente de Gemini. Sustituye el contrato inicial de xAI de `instruction.md` conforme a la actualización solicitada. Para habilitarla, configura `.env`:
 
 ```dotenv
 # Conversación: se mantienen tus valores actuales de AI_PROVIDER_* para Gemini.
-# Transcripción: clave de xAI, no una clave de OpenAI ni la de Gemini.
-OPENAI_BASE_URL=https://api.x.ai/v1
-OPENAI_API_KEY=tu_clave_xai
-STT_MODEL=grok-voice-transcribe-2.0
+# Transcripción: clave de Groq, no una clave de OpenAI, xAI ni Gemini.
+AI_GROQ_BASE_URL=https://api.groq.com/openai/v1
+AI_GROQ_API_KEY=tu_clave_groq
+AI_GROQ_MODEL=whisper-large-v3-turbo
 ```
 
-El nombre `OPENAI_*` se conserva por el contrato solicitado. No se comparte la clave de Gemini ni se añade un segundo campo secreto. Si usas `AI_PROVIDER_ID=openai` en el futuro, define sus credenciales en `AI_PROVIDER_API_KEY` y `AI_PROVIDER_BASE_URL` para mantener independientes la conversación y STT.
+Los nombres que añadiste `AI_GROQ_*` se admiten directamente; también se aceptan `GROQ_API_KEY`, `GROQ_BASE_URL`, `GROQ_MODEL` y `STT_MODEL` como alias. `AI_GROQ=groq` no es necesario: este adaptador ya usa Groq. No configures `openai/gpt-oss-120b` para voz: es un modelo de conversación. STT no utiliza las credenciales `OPENAI_*` ni modifica la configuración de Gemini.
 
 Recrea el worker al cambiar variables: `docker compose --profile telegram up --build -d telegram`. `docker compose restart` por sí solo no vuelve a cargar cambios de `.env` en un contenedor existente.
 
 Prueba desde Telegram con una nota de hasta **60 segundos y 2 MB**. Debe aparecer como texto en Conversaciones y contestarse por la outbox. Activa **Tomar control** y manda otra nota: debe aparecer en el hilo sin respuesta de IA. Una nota larga, grande o sin transcripción usable se rechaza localmente; no crea un mensaje en el backend.
 
-La transcripción hace un solo intento con timeout de 45 segundos. Sin clave, con 401 o ante un fallo del servicio, el bot pide que escribas. El reconocimiento con audio real requiere credenciales xAI válidas y una prueba manual; las pruebas automatizadas usan respuestas simuladas.
+La transcripción hace un solo intento con timeout de 45 segundos a `/audio/transcriptions`. Envía el audio OGG en memoria, idioma español, contexto del vocabulario de cursos y respuesta JSON. Sin clave, con 401/429 o ante un fallo del servicio, el bot pide que escribas. Groq dispone de un nivel gratuito con cuotas: no se promete uso ilimitado ni se cambia tu plan de facturación. Las pruebas automatizadas usan respuestas simuladas; se validó además una transcripción real con un OGG público de prueba.
 
-Contrato verificado en la [documentación oficial de xAI STT](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text).
+Contrato verificado en la [documentación oficial de Groq STT](https://console.groq.com/docs/speech-to-text). Consulta las cuotas vigentes en [límites de Groq](https://console.groq.com/docs/rate-limits) y en tu cuenta.
 
 Guía paso a paso: [arranque y pruebas](docs/testing-guide.md). Prioridades sugeridas para seguir mejorando: [propuestas](docs/improvements.md).

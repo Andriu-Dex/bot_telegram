@@ -4,9 +4,9 @@ La propuesta de `instruction.md` es apropiada para esta V1. Aporta valor visible
 
 Se implementa como extensión del worker: notas privadas, un minuto/2 MB, procesamiento en memoria, transcripción de un intento y envío al `ingest` existente con prefijo de micrófono. No se añade una modalidad al dashboard ni se alteran prompts, SQL, outbox o handover.
 
-El ajuste de configuración a tener presente es el proveedor: el contrato de voz usa **Grok STT de xAI**, mientras la conversación usa Gemini. Se reutilizan `OPENAI_API_KEY`/`OPENAI_BASE_URL` tal como pide el documento; esos nombres no convierten el servicio en OpenAI ni permiten usar una clave de Gemini para xAI. Son credenciales de servicios diferentes, aunque no se añada otro campo secreto.
+Actualización: por solicitud posterior, el contrato inicial xAI se sustituyó por **Groq con `whisper-large-v3-turbo`** para aprovechar su nivel gratuito con cuotas. Se usan las variables `AI_GROQ_*` añadidas por el usuario. La conversación permanece en Gemini y las credenciales `OPENAI_*` ya no intervienen en STT. Groq y Grok/xAI son proveedores diferentes.
 
-Si prefieres reducir proveedores, una alternativa de siguiente iteración sería sustituir únicamente la implementación de `transcribe()` por una transcripción con Gemini y evaluar su precisión con notas reales. El audio seguiría terminando en texto en el borde; el agente comercial no tendría que ser multimodal. En esta entrega se respeta el contrato xAI solicitado.
+Si prefieres reducir proveedores, una alternativa de siguiente iteración sería sustituir únicamente la implementación de `transcribe()` por una transcripción con Gemini y evaluar su precisión con notas reales. El audio seguiría terminando en texto en el borde; el agente comercial no tendría que ser multimodal. La implementación actual ya valida una transcripción con Groq mediante una muestra OGG pública.
 
 ## Prioridades recomendadas después de voz
 

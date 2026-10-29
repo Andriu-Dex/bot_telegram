@@ -55,7 +55,7 @@ También puedes usar **Simulador** para probar el pipeline sin Telegram. Crea pr
 
 ## Recorrido de voz
 
-La voz requiere configurar **xAI**, además de Gemini. Verifica en `.env`: `OPENAI_BASE_URL=https://api.x.ai/v1`, `OPENAI_API_KEY` de xAI y opcionalmente `STT_MODEL=grok-voice-transcribe-2.0`. Recrea el worker.
+La voz usa **Groq**, mientras Gemini atiende la conversación. Verifica en `.env`: `AI_GROQ_BASE_URL=https://api.groq.com/openai/v1`, `AI_GROQ_API_KEY` de Groq y `AI_GROQ_MODEL=whisper-large-v3-turbo`. No uses `openai/gpt-oss-120b`: ese modelo es para conversación. Recrea el worker con `docker compose --profile telegram up --build -d telegram`.
 
 1. Graba una nota de 10–20 segundos: **«Soy estudiante de la UTA. Me interesa Arduino. ¿Cuál es el precio?»**.
 2. Comprueba que aparece un mensaje de usuario con prefijo `🎤 ` y el texto reconocido. La respuesta automática sigue el mismo recorrido que el texto escrito.
@@ -92,5 +92,6 @@ La prueba de navegador publica la ficha GitHub y crea prospectos de prueba. Con 
 - **401 al entrar:** revisa `ADMIN_USERNAME`/`ADMIN_PASSWORD`. Si cambiaste `.env`, recrea API y worker.
 - **409 de Telegram:** suele haber dos instancias haciendo polling. Detén la instancia duplicada y deja un solo worker.
 - **503/504 del modelo:** el proveedor no completó la inferencia; el catálogo de respaldo permite continuar con información limitada. La aplicación conserva el modelo que configuraste.
-- **STT 401/404:** comprueba la clave xAI y la base `https://api.x.ai/v1`; no uses `https://api.openai.com/v1` para el endpoint `/stt` de Grok.
+- **STT 401/404:** comprueba `AI_GROQ_API_KEY`, la base `https://api.groq.com/openai/v1` y un modelo Whisper admitido. La ruta de transcripción es `/audio/transcriptions`; no se usa `/stt` de xAI.
+- **STT 429:** alcanzaste una cuota de Groq. Espera su restablecimiento y consulta los límites de tu cuenta; el bot permite continuar por texto.
 - **Puerto ocupado:** detén Docker antes de ejecutar `scripts/start.ps1`, o detén los procesos locales antes de usar Docker.

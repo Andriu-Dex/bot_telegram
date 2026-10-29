@@ -1,6 +1,7 @@
 """Speech-to-text boundary shared by channel adapters. Audio never touches disk."""
 import httpx
 from .config import settings
+from .network import tls_context
 
 
 class TranscriptionError(RuntimeError):
@@ -13,21 +14,23 @@ async def transcribe(audio: bytes, filename: str = 'voice.ogg') -> str:
     if not audio:
         raise TranscriptionError('El audio está vacío.')
     cfg = settings()
-    if not cfg.openai_api_key:
-        raise TranscriptionError('Configura OPENAI_API_KEY y OPENAI_BASE_URL para el servicio de transcripción.')
-    # xAI requires file to be the last multipart field. Do not route audio to Responses.
+    if not cfg.groq_api_key:
+        raise TranscriptionError('Configura AI_GROQ_API_KEY (o GROQ_API_KEY) para el servicio de transcripción.')
+    if cfg.stt_model not in ('whisper-large-v3-turbo', 'whisper-large-v3'):
+        raise TranscriptionError('AI_GROQ_MODEL debe ser whisper-large-v3-turbo o whisper-large-v3 para transcribir audio.')
     fields = [
         ('model', (None, cfg.stt_model)),
         ('language', (None, 'es')),
-        ('format', (None, 'true')),
-        ('keyterm', (None, 'CTT FISEI Python Arduino Linux GitHub CCNA')),
+        ('response_format', (None, 'json')),
+        ('temperature', (None, '0')),
+        ('prompt', (None, 'CTT FISEI Python Arduino Linux GitHub CCNA')),
         ('file', (filename, audio, 'audio/ogg')),
     ]
     try:
-        async with httpx.AsyncClient(timeout=45) as client:
+        async with httpx.AsyncClient(timeout=45, verify=tls_context()) as client:
             response = await client.post(
-                cfg.openai_base_url.rstrip('/') + '/stt',
-                headers={'Authorization': f'Bearer {cfg.openai_api_key}'},
+                cfg.groq_base_url.rstrip('/') + '/audio/transcriptions',
+                headers={'Authorization': f'Bearer {cfg.groq_api_key}'},
                 files=fields,
             )
             response.raise_for_status()

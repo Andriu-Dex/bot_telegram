@@ -1,4 +1,6 @@
 
+> Actualización posterior solicitada: la implementación usa ahora Groq, `whisper-large-v3-turbo`, las variables `AI_GROQ_*` y `POST /audio/transcriptions`. El contrato xAI de abajo se conserva como referencia original y fue sustituido en ese punto. Se mantiene el diseño modular, el límite de tamaño/duración y el ingreso de texto existente. Consulta README.md para la configuración vigente.
+
 Implementá reconocimiento de notas de voz en este repo de forma modular. Transcribí audio en el borde de Telegram y reutilizá el `ingest` de texto. No conviertas el agente ni el dashboard en un sistema multimodal.
 
 ## Objetivo

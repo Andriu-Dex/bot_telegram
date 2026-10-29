@@ -22,8 +22,8 @@ def voice_update(text_bytes=b'OggS-test', duration=20, file_size=10, chat_type='
 
 def stt_provider(monkeypatch, handler):
     cfg = settings()
-    monkeypatch.setattr(cfg, 'openai_api_key', 'test-stt-secret')
-    monkeypatch.setattr(cfg, 'openai_base_url', 'https://stt.example/v1/')
+    monkeypatch.setattr(cfg, 'groq_api_key', 'test-stt-secret')
+    monkeypatch.setattr(cfg, 'groq_base_url', 'https://stt.example/v1/')
     original = httpx.AsyncClient
     def create(**kwargs):
         assert kwargs['timeout'] == 45
@@ -35,13 +35,14 @@ def test_stt_multipart_contract_and_file_last(monkeypatch):
     calls = []
     def handler(request):
         calls.append(request)
-        assert str(request.url) == 'https://stt.example/v1/stt'
+        assert str(request.url) == 'https://stt.example/v1/audio/transcriptions'
         assert request.headers['Authorization'] == 'Bearer test-stt-secret'
         body = request.content
-        names = [body.index(f'name="{name}"'.encode()) for name in ('model', 'language', 'format', 'keyterm', 'file')]
+        names = [body.index(f'name="{name}"'.encode()) for name in ('model', 'language', 'response_format', 'temperature', 'prompt', 'file')]
         assert names == sorted(names)
-        assert b'grok-voice-transcribe-2.0' in body
-        assert b'\r\n\r\nes\r\n' in body and b'\r\n\r\ntrue\r\n' in body
+        assert b'whisper-large-v3-turbo' in body
+        assert b'\r\n\r\nes\r\n' in body and b'\r\n\r\njson\r\n' in body
+        assert b'name="format"' not in body and b'name="keyterm"' not in body
         assert b'CTT FISEI Python Arduino Linux GitHub CCNA' in body
         assert b'filename="voice.ogg"' in body and b'Content-Type: audio/ogg' in body
         assert b'OggS-test' in body
@@ -94,8 +95,41 @@ def test_stt_rejects_size_before_any_network(monkeypatch, audio):
 
 
 def test_stt_missing_key_no_network(monkeypatch):
-    monkeypatch.setattr(settings(), 'openai_api_key', '')
-    with pytest.raises(stt.TranscriptionError, match='OPENAI_API_KEY'):
+    monkeypatch.setattr(settings(), 'groq_api_key', '')
+    monkeypatch.setattr(settings(), 'openai_api_key', 'legacy-key-must-not-be-used')
+    with pytest.raises(stt.TranscriptionError, match='AI_GROQ_API_KEY'):
+        asyncio.run(stt.transcribe(b'audio'))
+
+
+def test_groq_environment_names(monkeypatch):
+    from app.config import Settings
+    monkeypatch.setenv('AI_GROQ_API_KEY', 'test-key')
+    monkeypatch.setenv('AI_GROQ_BASE_URL', 'https://api.groq.com/openai/v1')
+    monkeypatch.setenv('AI_GROQ_MODEL', 'whisper-large-v3-turbo')
+    cfg = Settings(_env_file=None)
+    assert cfg.groq_api_key == 'test-key'
+    assert cfg.groq_base_url == 'https://api.groq.com/openai/v1'
+    assert cfg.stt_model == 'whisper-large-v3-turbo'
+
+
+def test_standard_groq_environment_aliases(monkeypatch):
+    from app.config import Settings
+    for name in ('AI_GROQ_API_KEY', 'AI_GROQ_BASE_URL', 'AI_GROQ_MODEL'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('GROQ_API_KEY', 'test-key')
+    monkeypatch.setenv('GROQ_BASE_URL', 'https://api.groq.com/openai/v1')
+    monkeypatch.setenv('GROQ_MODEL', 'whisper-large-v3')
+    cfg = Settings(_env_file=None)
+    assert cfg.groq_api_key == 'test-key' and cfg.stt_model == 'whisper-large-v3'
+
+
+def test_stt_rejects_chat_model_before_network(monkeypatch):
+    monkeypatch.setattr(settings(), 'groq_api_key', 'test')
+    monkeypatch.setattr(settings(), 'stt_model', 'openai/gpt-oss-120b')
+    def never(**kwargs):
+        raise AssertionError('No debe enviar audio a un modelo de conversación')
+    monkeypatch.setattr(stt.httpx, 'AsyncClient', never)
+    with pytest.raises(stt.TranscriptionError, match='AI_GROQ_MODEL'):
         asyncio.run(stt.transcribe(b'audio'))
 
 

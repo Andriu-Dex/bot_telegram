@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.update(ADMIN_PASSWORD='test-password', SESSION_SECRET='s'*40, INTERNAL_API_TOKEN='i'*40, OPENAI_API_KEY='', OPENAI_MODEL='', AI_PROVIDER_ID='openai', AI_PROVIDER_API_KEY='', AI_PROVIDER_MODEL='', AI_PROVIDER_BASE_URL='')
+os.environ.update(AI_GROQ_API_KEY='', AI_GROQ_BASE_URL='https://api.groq.com/openai/v1', AI_GROQ_MODEL='whisper-large-v3-turbo')
 from app.config import settings
 settings.cache_clear()
 from app.db import Base, get_db
