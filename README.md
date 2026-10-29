@@ -156,3 +156,5 @@ La transcripción hace un solo intento con timeout de 45 segundos a `/audio/tran
 Contrato verificado en la [documentación oficial de Groq STT](https://console.groq.com/docs/speech-to-text). Consulta las cuotas vigentes en [límites de Groq](https://console.groq.com/docs/rate-limits) y en tu cuenta.
 
 Guía paso a paso: [arranque y pruebas](docs/testing-guide.md). Prioridades sugeridas para seguir mejorando: [propuestas](docs/improvements.md).
+
+Regresiones de conversación corregidas y recorrido de prueba: [calidad conversacional](docs/conversation-quality.md). El estado autenticado `/api/status` distingue credenciales configuradas de llamadas exitosas o fallidas al modelo mediante `llm_runtime`.

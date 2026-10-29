@@ -1,14 +1,19 @@
 """Provider boundary. Gemini preserves complete native content/thought signatures."""
 import json
+from datetime import datetime, timezone
 import httpx
 from google import genai
 from google.genai import types, errors
 from .network import tls_context
 
 ProviderError = errors.APIError
+_runtime = {'successful_calls': 0, 'failed_calls': 0, 'last_success_at': None, 'last_failure_at': None, 'last_error_code': None, 'last_error_type': None}
+
+def runtime_status():
+    return dict(_runtime)
 
 class Conversation:
-    def __init__(self, cfg, instructions, history, tools=None, schema=None, max_tokens=1800, timeout=30):
+    def __init__(self, cfg, instructions, history, tools=None, schema=None, max_tokens=3072, timeout=30):
         self.cfg, self.instructions = cfg, instructions
         self.tools, self.schema, self.max_tokens = tools or [], schema, max_tokens
         self.inputs = list(history)
@@ -36,6 +41,18 @@ class Conversation:
             await self.http.aclose()
 
     async def generate(self):
+        try:
+            output = await self._generate()
+            if not output:
+                raise ValueError('El proveedor no devolvió una respuesta visible ni herramientas')
+        except (httpx.HTTPError, ProviderError, ValueError, KeyError, TypeError) as exc:
+            code = getattr(exc, 'code', None) or (exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None)
+            _runtime.update(failed_calls=_runtime['failed_calls'] + 1, last_failure_at=datetime.now(timezone.utc).isoformat(), last_error_code=code, last_error_type=type(exc).__name__)
+            raise
+        _runtime.update(successful_calls=_runtime['successful_calls'] + 1, last_success_at=datetime.now(timezone.utc).isoformat())
+        return output
+
+    async def _generate(self):
         if not self.google:
             body = {'model': self.cfg.llm_model, 'instructions': self.instructions, 'input': self.inputs, 'max_output_tokens': self.max_tokens, 'store': False}
             if self.tools:
@@ -52,6 +69,9 @@ class Conversation:
             self.contents.append(types.Content(role='user', parts=self.pending))
             self.pending = []
         config = {'system_instruction': self.instructions, 'max_output_tokens': self.max_tokens}
+        if self.cfg.llm_model.removeprefix('models/') == 'gemini-3.8-flash':
+            # This model supports low/medium/high; minimal is explicitly unsupported.
+            config['thinking_config'] = types.ThinkingConfig(thinking_level='low')
         if self.tools:
             config['tools'] = [types.Tool(function_declarations=[types.FunctionDeclaration(name=t['name'], description=t['description'], parameters_json_schema=t['parameters']) for t in self.tools])]
             config['automatic_function_calling'] = types.AutomaticFunctionCallingConfig(disable=True)
@@ -61,6 +81,8 @@ class Conversation:
         response = await self.google.aio.models.generate_content(model=self.cfg.llm_model, contents=self.contents, config=types.GenerateContentConfig(**config))
         if not response.candidates or not response.candidates[0].content:
             raise ValueError('Gemini no devolvió contenido')
+        if str(getattr(response.candidates[0], 'finish_reason', '')) in ('FinishReason.MAX_TOKENS', 'MAX_TOKENS'):
+            raise ValueError('Gemini agotó los tokens antes de completar la respuesta')
         content = response.candidates[0].content
         self.contents.append(content)
         output = []

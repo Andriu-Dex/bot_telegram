@@ -42,3 +42,17 @@ def test_gemini_structured_classifier_schema(monkeypatch):
         async with Conversation(config(),'Clasifica significado',[{'role':'user','content':'Me parece caro'}],schema=schema) as conversation:
             assert 'dudoso' in output_text(await conversation.generate())
     asyncio.run(scenario())
+
+def test_gemini_38_uses_supported_low_thinking_and_rejects_truncation(monkeypatch):
+    import pytest
+    async def generate(**kwargs):
+        assert kwargs['config'].thinking_config.thinking_level.value == 'LOW'
+        return SimpleNamespace(candidates=[SimpleNamespace(finish_reason='MAX_TOKENS', content=types.Content(role='model',parts=[types.Part(text='Respuesta incompleta')]))])
+    async def close():pass
+    monkeypatch.setattr(llm.genai,'Client',lambda **kw:SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate),aclose=close)))
+    async def scenario():
+        cfg=config();cfg.llm_model='gemini-3.8-flash'
+        async with Conversation(cfg,'Responde brevemente',[{'role':'user','content':'Fecha del curso'}]) as conversation:
+            with pytest.raises(ValueError,match='agotó los tokens'):
+                await conversation.generate()
+    asyncio.run(scenario())

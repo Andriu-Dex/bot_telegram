@@ -20,6 +20,8 @@ from .db import get_db, SessionLocal
 from .models import Audit, Course, Lead, Message, now
 from .triage import classify
 from .policy import policy_response
+from .knowledge import scope_response
+from .llm import runtime_status
 
 @asynccontextmanager
 async def lifespan(app):
@@ -98,7 +100,7 @@ def health():
 @app.get('/api/status', dependencies=[Depends(admin)])
 def status():
     cfg = settings()
-    return {'telegram_configured': bool(cfg.telegram_bot_token), 'llm_configured': cfg.llm_configured, 'llm_provider': cfg.ai_provider_id, 'whatsapp': 'adapter_pending'}
+    return {'telegram_configured': bool(cfg.telegram_bot_token), 'llm_configured': cfg.llm_configured, 'llm_provider': cfg.ai_provider_id, 'llm_runtime': runtime_status(), 'whatsapp': 'adapter_pending'}
 
 @app.get('/api/courses', dependencies=[Depends(admin)])
 def courses(db: Session = Depends(get_db)):
@@ -202,6 +204,9 @@ async def ingest(channel, body, db):
                 policy = policy_response(body.text)
                 if policy:
                     return policy, 'policy'
+                scope = scope_response(body.text)
+                if scope:
+                    return scope, 'scope'
                 from .agent import normalized
                 import re
                 t = normalized(body.text)
