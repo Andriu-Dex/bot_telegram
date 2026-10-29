@@ -1,4 +1,5 @@
 """Transport adapters implement outbound delivery, never admissions/business rules."""
+import re
 from typing import Protocol
 import httpx
 from .config import settings
@@ -7,8 +8,15 @@ from .network import tls_context
 class Channel(Protocol):
     async def send(self, external_id: str, text: str) -> None: ...
 
+def telegram_text(text: str) -> str:
+    """Convert supported assistant Markdown to plain Telegram text."""
+    text = re.sub(r'\*\*(?=\S)(.+?)\*\*', r'\1', text)
+    return re.sub(r'(?m)^(\s*)\*\s+', r'\1• ', text)
+
+
 class TelegramChannel:
     async def send(self, external_id, text):
+        text = telegram_text(text)
         token = settings().telegram_bot_token
         if not token:
             raise RuntimeError('Telegram no está configurado')
